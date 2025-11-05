@@ -1,0 +1,45 @@
+# ------------------------
+# Python
+# ------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+*.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# ------------------------
+# OS / Editor junk
+# ------------------------
+.DS_Store
+Thumbs.db
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp
+
+# ------------------------
+# Project-specific
+# ------------------------
+
+# Private data (DO NOT COMMIT)
+data/
+
+# Model checkpoints
+checkpoints/
+
+# Inference / postprocess outputs
+outputs/
+runs/
+tensorboard/
