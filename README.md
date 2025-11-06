@@ -1,426 +1,199 @@
-# SBSNet Froth Segmentation
+# SBSNet Froth Segmentation Pipeline
 
-A modular, production-ready PyTorch implementation of **SBSNet** for **froth image segmentation**, including:
+A modular PyTorch implementation of **SBSNet** for industrial froth image segmentation. The repository bundles everything required to train, evaluate, infer, and post-process froth segmentation masks, including a watershed-based instance refinement step suitable for production environments.
 
-- Training and validation pipeline for SBSNet  
-- Evaluation with IoU and Dice metrics  
-- Inference to generate soft segmentation maps from a trained model  
-- A **watershed-based post-processing pipeline** to split and count individual froths  
-
-> ⚠️ **Note:** The dataset used to develop this repository is **private** and **not included**.  
-> The code is structured so you can plug in your own data in the same format.
+> **Dataset notice**
+> The training dataset used by the original authors is **private** and therefore not distributed with the code. Bring your own imagery and polygon annotations that follow the structure described below.
 
 ---
 
-## 1. Project Overview
-
-Froth flotation is widely used in mineral processing. Analyzing the froth structure (bubble count, size distribution, morphology) can help monitor and optimize process performance.
-
-This repository provides:
-
-1. A PyTorch implementation of **SBSNet** tailored for **froth segmentation**.  
-2. A pipeline to generate **soft segmentation maps** (normalized logits).  
-3. A **watershed-based post-processing** stage that:
-   - Refines the segmentation mask,
-   - Splits merged froth regions,
-   - Filters small artifacts,
-   - Produces per-froth instance-like objects and counts.
-
-The project is organized as a clean, reproducible Python package and is suitable both for research and for integration into larger systems.
+## Table of contents
+- [Key features](#key-features)
+- [Repository structure](#repository-structure)
+- [Getting started](#getting-started)
+- [Prepare your dataset](#prepare-your-dataset)
+- [Configure the pipeline](#configure-the-pipeline)
+- [Run the training & evaluation workflow](#run-the-training--evaluation-workflow)
+  - [1. Train](#1-train)
+  - [2. Evaluate](#2-evaluate)
+  - [3. Predict soft masks](#3-predict-soft-masks)
+  - [4. Watershed post-processing](#4-watershed-post-processing)
+- [Outputs](#outputs)
+- [Reproducibility tips](#reproducibility-tips)
+- [Extending the project](#extending-the-project)
+- [Troubleshooting](#troubleshooting)
+- [Authors & citation](#authors--citation)
 
 ---
 
-## 2. Authors
+## Key features
+- **Turn-key SBSNet implementation** built with PyTorch and TorchVision.
+- **Flexible pipeline scripts** for training, evaluation, inference, and post-processing.
+- **Watershed refinement** that splits merged froth blobs, filters small artifacts, and reports pre/post counts.
+- **Modular configuration** via `config.py` for datasets, hyperparameters, and device selection.
+- **Utility functions** for IoU & Dice metrics, mask analysis, and ROI debugging.
 
-**Primary Authors**
+## Repository structure
+```
+SBS-Net-froth-segmentation-pipeline/
+├── README.md
+├── config.py                # Global configuration used by all scripts
+├── sbsnet_froth/
+│   ├── models/              # SBSNet architecture and building blocks
+│   └── utils/               # Metrics, watershed post-processing helpers
+└── scripts/
+    ├── train.py             # Train SBSNet on polygon annotations
+    ├── eval.py              # Compute IoU / Dice on the evaluation split
+    ├── predict.py           # Export soft segmentation maps as PNGs
+    └── postprocess.py       # Apply watershed-based instance refinement
+```
 
-- **Sina Lotfi**  
-- **Reza Dadbin**
+> **Polygon dataset loader**
+> The scripts expect a `PolygonDataset` implementation exposed as `sbsnet_froth.data.PolygonDataset`. This class is part of the internal tooling used by the authors and is not shipped publicly. Implement a compatible dataset (e.g., wrapping LabelMe-style JSON polygons) that returns image / binary mask pairs resized to `Config.image_size`.
 
-If you use this repository or results derived from it in academic or industrial work, please credit:
+## Getting started
+
+### Prerequisites
+- Python 3.9 or newer
+- (Optional) CUDA-capable GPU + PyTorch CUDA build
+- System packages for OpenCV image codecs (e.g., `libjpeg`, `libpng`)
+
+Install Python dependencies in a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118  # adjust for your CUDA version
+pip install numpy opencv-python scikit-image matplotlib tqdm
+```
+
+Feel free to capture the above requirements into a `requirements.txt` for automation.
+
+## Prepare your dataset
+Organize your dataset under `data/` (by default, inside the repository root). Each split should contain paired image and annotation files:
+
+```
+data/
+├── train/
+│   ├── img_0001.tiff
+│   ├── img_0001.json
+│   └── ...
+├── val/
+│   ├── img_0101.tiff
+│   ├── img_0101.json
+│   └── ...
+└── eval/
+    ├── img_0201.tiff
+    ├── img_0201.json
+    └── ...
+```
+
+Assumptions:
+- Images use a lossless format (TIFF/PNG) and RGB channels.
+- JSON annotations follow LabelMe polygon semantics, convertible to binary masks.
+- The dataset class converts polygons to binary masks with the same spatial dimensions as the images and returns `(image_tensor, mask_tensor)`.
+
+## Configure the pipeline
+All hyperparameters and paths live in [`config.py`](config.py). Key fields:
+
+- `data_root`, `train_dir`, `val_dir`, `eval_dir`: point to your dataset splits.
+- `checkpoint_dir`: directory for saving model checkpoints.
+- `outputs_root`, `pred_masks_dir`, `postproc_masks_dir`: output folders used during inference.
+- `image_size`: `(width, height)` for resizing inputs and masks.
+- `batch_size`, `epochs`, `lr`, `weight_decay`: training knobs.
+- `device`: `"auto"`, `"cuda"`, or `"cpu"`.
+- `pixel_threshold`: probability threshold for turning logits into binary predictions during training validation.
+
+> **Tip:** Ensure your `PolygonDataset` applies the same resizing and augmentations used during training to avoid misalignment.
+
+## Quick instructions: run the model
+Want to sanity-check the repository with a pretrained checkpoint or after you finish training? Follow these steps:
+
+1. Place the `.pth` checkpoint you want to use inside the directory referenced by `Config.checkpoint_dir` (defaults to `./checkpoints/`).
+2. Update `Config.resume_checkpoint` to match the filename (e.g., `"model_best.pth"`).
+3. Point `Config.eval_dir` to the folder containing the images you want to segment.
+4. Activate your environment and run:
+   ```bash
+   python scripts/predict.py
+   python scripts/postprocess.py
+   ```
+   The first command produces raw probability masks, while the second converts them into final, binarized segmentation maps.
+5. Collect the post-processed masks from `outputs/postprocessed_masks/` for downstream analysis.
+
+## Run the training & evaluation workflow
+All commands below are executed from the repository root with the virtual environment activated.
+
+### 1. Train
+```bash
+python scripts/train.py
+```
+- Seeds Python, NumPy, and PyTorch for reproducibility.
+- Logs epoch-level losses and pixel accuracy for train/validation splits.
+- Saves `model_epoch_{N}.pth` every `Config.save_every` epochs and maintains `model_best.pth` based on validation pixel accuracy.
+
+### 2. Evaluate
+```bash
+python scripts/eval.py
+```
+- Loads the checkpoint specified by `Config.resume_checkpoint` (or `model_best.pth` by default).
+- Computes mean Intersection over Union (IoU) and Dice scores on `eval_dir`.
+
+### 3. Predict soft masks
+```bash
+python scripts/predict.py
+```
+- Generates per-image logits, normalizes them to `[0, 1]`, and exports channel-0 activations as 8-bit grayscale PNGs to `outputs/raw_masks/`.
+- Acts on the dataset referenced by `Config.eval_dir`.
+
+### 4. Watershed post-processing
+```bash
+python scripts/postprocess.py
+```
+- Loads each PNG from `outputs/raw_masks/`.
+- Applies dynamic thresholding, ROI-wise watershed splitting, and small-component filtering.
+- Saves refined binary masks to `outputs/postprocessed_masks/` and prints before/after froth counts.
+
+## Outputs
+After running the full pipeline you should expect the following directories:
+
+```
+checkpoints/
+├── model_best.pth
+└── model_epoch_XX.pth
+
+outputs/
+├── raw_masks/
+│   └── mask_0000.png
+└── postprocessed_masks/
+    └── mask_0000.png
+```
+
+Optional debug artifacts from the watershed pipeline can be written to `./debug_roi_watershed/` by enabling the `save_debug` or `visualize` flags when calling `process_image_roi_watershed` directly.
+
+## Reproducibility tips
+- Fix `Config.seed` before training to make experiments deterministic across PyTorch, NumPy, and Python.
+- Keep `image_size`, `batch_size`, learning rate, and augmentation strategy consistent across runs.
+- Track the repository commit hash and dataset snapshot used for each experiment.
+
+## Extending the project
+- **Model variants:** add new architectures under `sbsnet_froth/models/` and expose them via `__init__.py`.
+- **Augmentations:** wrap `PolygonDataset` or the training script with Albumentations / TorchVision transforms.
+- **Logging:** integrate TensorBoard, Weights & Biases, or MLFlow hooks into `scripts/train.py`.
+- **Hyperparameter sweeps:** orchestrate with Optuna or Ray Tune by invoking the training script programmatically.
+- **Multi-class froth segmentation:** increase `Config.num_classes` and adjust the dataset to produce multi-channel masks.
+
+## Troubleshooting
+- **Missing dataset module:** implement and install `sbsnet_froth.data.PolygonDataset` so the scripts can import it.
+- **CUDA not available:** set `Config.device = "cpu"` or install the correct CUDA-enabled PyTorch wheel.
+- **Checkpoint not found:** ensure `Config.resume_checkpoint` points to an existing `.pth` file or run training first.
+- **Blank masks after post-processing:** inspect the intermediate masks with `process_image_roi_watershed(..., visualize=True)` to tune thresholds or `MIN_AREA`.
+
+## Authors & citation
+Primary authors: **Sina Lotfi** and **Reza Dadbin**.
+
+If you build upon this work in academic or industrial settings, please acknowledge:
 
 > *Sina Lotfi & Reza Dadbin – SBSNet-based Froth Segmentation Pipeline*
 
-(You can later add a formal citation here if you publish a thesis or paper.)
-
----
-
-## 3. Quickstart – How to Run the Code
-
-This is the minimal sequence to go from **fresh clone → training → evaluation → post-processing**.
-
-
-3.1. Put your data in place
-Create this structure locally (not pushed to git):
-
-text
-Copy code
-data/
-├─ train/
-├─ val/
-└─ eval/
-Each of these folders should contain pairs like:
-
-text
-Copy code
-img_0001.tiff
-img_0001.json
-img_0002.tiff
-img_0002.json
-...
-.tiff = image
-.json = polygon annotations (LabelMe-style)
-
-3.2. Check config.py
-Open config.py and make sure at least these are correct:
-
-python
-Copy code
-train_dir = ROOT / "data" / "train"
-val_dir   = ROOT / "data" / "val"
-eval_dir  = ROOT / "data" / "eval"
-
-image_size = (512, 512)
-batch_size = 2
-epochs = 50
-You can also change device to "cuda" if you want to force GPU.
-
-3.3. Train SBSNet
-From the repo root:
-
-
-Copy code
-python scripts/train.py
-This will:
-
-Train on data/train/
-
-Validate on data/val/
-
-Save checkpoints under checkpoints/
-
-model_epoch_XX.pth
-
-model_best.pth (best val pixel accuracy)
-
-3.4. Evaluate (IoU & Dice)
-Set in config.py (optional but recommended):
-
-
-Copy code
-resume_checkpoint = ROOT / "checkpoints" / "model_best.pth"
-Then run:
-
-
-Copy code
-python scripts/eval.py
-This prints mean IoU and Dice over the data/eval/ split.
-
-3.5. Generate soft segmentation maps
-
-Copy code
-python scripts/predict.py
-This reads images from eval_dir and writes normalized logits (soft maps) to:
-
-
-Copy code
-outputs/raw_masks/mask_0000.png
-outputs/raw_masks/mask_0001.png
-...
-3.6. Run watershed post-processing
-
-Copy code
-python scripts/postprocess.py
-This reads the soft maps from outputs/raw_masks/, runs the watershed-based separation pipeline, and saves final binary masks to:
-
-
-Copy code
-outputs/postprocessed_masks/
-It also prints how many froths were detected before and after splitting.
-
-4. Repository Structure
-text
-Copy code
-SBS-Net/
-├─ config.py                  # Central configuration (paths, hyperparams, device, outputs)
-├─ README.md
-├─ requirements.txt
-├─ .gitignore
-│
-├─ sbsnet_froth/
-│   ├─ __init__.py
-│   │
-│   ├─ models/
-│   │   ├─ __init__.py
-│   │   └─ sbsnet/
-│   │       ├─ __init__.py
-│   │       ├─ SBSNet.py               # Main SBSNet network definition
-│   │       ├─ resnet.py               # Backbone / feature extractor
-│   │       ├─ sknet.py                # Selective Kernel blocks
-│   │       ├─ enhanced_feature_net.py # Enhanced feature fusion
-│   │       └─ downsample.py           # Custom downsampling layers
-│   │
-│   ├─ data/
-│   │   ├─ __init__.py
-│   │   └─ polygon_dataset.py          # PolygonDataset for .tiff + .json pairs
-│   │
-│   └─ utils/
-│       ├─ __init__.py
-│       ├─ metrics.py                  # IoU + Dice
-│       └─ postprocess.py              # Watershed-based froth post-processing
-│
-├─ scripts/
-│   ├─ train.py                        # Train + validate SBSNet
-│   ├─ eval.py                         # Evaluate IoU / Dice on eval split
-│   ├─ predict.py                      # Generate soft segmentation maps (logits)
-│   └─ postprocess.py                  # Apply watershed to predicted maps
-│
-└─ data/                               # LOCAL ONLY (ignored by git)
-    ├─ train/
-    ├─ val/
-    └─ eval/
-
-
-5. Features
-SBSNet Implementation
-
-Modular architecture for semantic segmentation, adapted for froth images.
-
-Polygon-based Dataset Loader
-
-Converts polygon annotations from JSON into binary masks.
-
-Training / Validation Pipeline
-
-Standard PyTorch loop with logging and checkpointing.
-
-Evaluation (IoU & Dice)
-
-Segmentation quality metrics on a separate eval split.
-
-Prediction / Inference
-
-Generates soft segmentation maps from a trained model (matching original notebook behavior).
-
-Watershed Post-processing
-
-Splits merged froths, filters small blobs, and produces final froth counts.
-
-6. Configuration (config.py)
-All settings live in config.py.
-
-Most common changes:
-
-Adjust data directories (train_dir, val_dir, eval_dir).
-
-Change image_size, batch_size, epochs, lr for your experiments.
-
-Set resume_checkpoint when evaluating or predicting.
-
-7. Data Format & Layout
-Dataset is not included. This section defines how your own data should look.
-
-7.1. Folder Layout
-text
-Copy code
-data/
-├─ train/
-│   ├─ img_0001.tiff
-│   ├─ img_0001.json
-│   ├─ img_0002.tiff
-│   ├─ img_0002.json
-│   └─ ...
-├─ val/
-│   ├─ ...
-└─ eval/
-    ├─ ...
-Each .tiff has a corresponding .json annotation file with polygons.
-
-7.2. JSON Annotation Format (LabelMe-like)
-Example structure:
-
-json
-Copy code
-{
-  "shapes": [
-    {
-      "label": "froth",
-      "points": [[x1, y1], [x2, y2], ..., [xn, yn]]
-    }
-  ]
-}
-points define the polygon vertices.
-
-All shapes in data['shapes'] are used to fill the froth mask.
-
-7.3. PolygonDataset Behavior
-PolygonDataset:
-
-Loads the .tiff image and converts to RGB.
-
-Applies a center crop of 1080 × 1080.
-
-Renders polygons into a binary mask: 1 = froth, 0 = background.
-
-Resizes image and mask to Config.image_size.
-
-Returns:
-
-image: (3, H, W) float tensor in [0,1]
-
-mask: (1, H, W) float tensor in {0,1}
-
-8. Training :
-
-Copy code
-python scripts/train.py
-What happens:
-
-Seeds and device setup from Config.
-
-Training & validation datasets created from train_dir and val_dir.
-
-SBSNet instantiated:
-
-python
-Copy code
-from sbsnet_froth.models import SBSNet
-model = SBSNet(num_classes=Config.num_classes).to(device)
-Loss: BCEWithLogitsLoss, with the binary mask repeated to match (B, 2, H, W) outputs.
-
-Pixel accuracy computed as:
-
-python
-Copy code
-preds = (torch.sigmoid(outputs) > Config.pixel_threshold).float()
-Checkpoints written to checkpoints/:
-
-model_epoch_XX.pth every Config.save_every epochs
-
-model_best.pth when validation pixel accuracy improves
-
-9. Evaluation (IoU & Dice)
-Set:
-
-python
-Copy code
-resume_checkpoint = ROOT / "checkpoints/model_best.pth"
-Run:
-
-
-Copy code
-python scripts/eval.py
-What it does:
-
-Loads SBSNet + checkpoint.
-
-Runs on eval_dir.
-
-Gets predicted class map via argmax over channels.
-
-Computes IoU and Dice per image using compute_iou_and_dice.
-
-Prints mean IoU and mean Dice over the eval set.
-
-10. Prediction (Soft Segmentation Maps)
-
-Copy code
-python scripts/predict.py
-What it does:
-
-Loads images from eval_dir.
-
-Runs SBSNet + checkpoint.
-
-For each image:
-
-Takes the raw logits outputs[b] (shape (C, H, W)),
-
-Normalizes:
-
-python
-Copy code
-output_image = output_image - output_image.min()
-output_image = output_image / output_image.max()
-seg = output_image[0]  # channel 0
-Saves seg as a grayscale image [0,255].
-
-Outputs go to:
-
-text
-Copy code
-outputs/raw_masks/mask_0000.png
-outputs/raw_masks/mask_0001.png
-...
-These soft maps are directly compatible with the watershed post-process.
-
-11. Watershed Post-processing
-
-Copy code
-python scripts/postprocess.py
-What it does:
-
-Reads all predicted soft masks from outputs/raw_masks/.
-
-For each mask:
-
-Dynamically thresholds based on mean and standard deviation.
-
-Extracts connected components.
-
-For each component:
-
-Computes distance transform.
-
-Uses a statistical threshold on distances to find seeds.
-
-If multiple seeds present → runs local watershed to split merged froths.
-
-Filters out small components by minimum area.
-
-Saves final cleaned binary masks to:
-
-text
-Copy code
-outputs/postprocessed_masks/
-Prints:
-
-count_before (pre-watershed blobs),
-
-count_after (final froths),
-
-removed_small_objects.
-
-plot_froth_regions can also be used to visualize labeled froths with bounding boxes and centroids.
-
-12. Reproducibility
-Config.seed is used to seed:
-
-Python random
-
-NumPy
-
-PyTorch (CPU & CUDA)
-
-Deterministic operations for cropping, resizing, mask generation for the same data.
-
-To make experiments reproducible:
-
-Fix Config.seed.
-
-Keep training hyperparameters (image_size, batch_size, lr, epochs) fixed.
-
-Use the same dataset and repository commit.
-
-13. Extending the Project
-You can extend this repository in several directions:
-
-New Architectures: add more models under sbsnet_froth/models/ and select via config.
-
-Augmentations: integrate Albumentations or torchvision transforms.
-
-Advanced Logging: plug in TensorBoard, Weights & Biases, etc.
-
-Multi-class Segmentation: support multiple froth classes with num_classes > 2.
-
-Hyperparameter Tuning: wrap training in Optuna or similar for automatic tuning.
+Feel free to adapt the citation to your preferred reference style once a formal publication is available.
