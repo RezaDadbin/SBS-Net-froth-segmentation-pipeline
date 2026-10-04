@@ -1,9 +1,14 @@
 # SBSNet Froth Segmentation Pipeline
 
-A modular PyTorch implementation of **SBSNet** for industrial froth image segmentation. The repository bundles everything required to train, evaluate, infer, and post-process froth segmentation masks, including a watershed-based instance refinement step suitable for production environments.
+A modular PyTorch implementation of **SBSNet** for industrial froth image segmentation. The repository contains training, evaluation, prediction, and watershed post-processing scripts. Its internal polygon dataset loader is not included in the public source.
 
-> **Dataset notice**
-> The training dataset used by the original authors is **private** and therefore not distributed with the code. Bring your own imagery and polygon annotations that follow the structure described below.
+## Research Status and Data Availability
+
+This repository forms part of broader froth-image analysis research. Experimental work completed; a data-paper manuscript is currently in preparation.
+
+The research dataset is private/proprietary and is not distributed with this repository. Code is provided for research and reproducibility with compatible, independently supplied data. Exact reproduction of the private experiments also requires their data, splits, configuration, and checkpoints.
+
+> **Public workflow requirement:** `sbsnet_froth.data.PolygonDataset` is not shipped. Training, evaluation, and prediction require a compatible implementation at that import path before the commands below can run.
 
 ---
 
@@ -27,7 +32,7 @@ A modular PyTorch implementation of **SBSNet** for industrial froth image segmen
 ---
 
 ## Key features
-- **Turn-key SBSNet implementation** built with PyTorch and TorchVision.
+- **SBSNet model implementation** built with PyTorch and TorchVision.
 - **Flexible pipeline scripts** for training, evaluation, inference, and post-processing.
 - **Watershed refinement** that splits merged froth blobs, filters small artifacts, and reports pre/post counts.
 - **Modular configuration** via `config.py` for datasets, hyperparameters, and device selection.
@@ -64,11 +69,11 @@ Install Python dependencies in a virtual environment:
 python -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118  # adjust for your CUDA version
+pip install torch torchvision  # select a compatible CUDA build if needed
 pip install numpy opencv-python scikit-image matplotlib tqdm
 ```
 
-Feel free to capture the above requirements into a `requirements.txt` for automation.
+Select a compatible PyTorch/TorchVision build using the [official installation instructions](https://pytorch.org/get-started/locally/). Record the installed versions and dataset-loader implementation for reproducibility.
 
 ## Prepare your dataset
 Organize your dataset under `data/` (by default, inside the repository root). Each split should contain paired image and annotation files:
@@ -172,7 +177,7 @@ outputs/
 Optional debug artifacts from the watershed pipeline can be written to `./debug_roi_watershed/` by enabling the `save_debug` or `visualize` flags when calling `process_image_roi_watershed` directly.
 
 ## Reproducibility tips
-- Fix `Config.seed` before training to make experiments deterministic across PyTorch, NumPy, and Python.
+- Record `Config.seed`, package versions, and device. Seeding reduces randomness but does not guarantee identical runs across platforms.
 - Keep `image_size`, `batch_size`, learning rate, and augmentation strategy consistent across runs.
 - Track the repository commit hash and dataset snapshot used for each experiment.
 
@@ -196,4 +201,4 @@ If you build upon this work in academic or industrial settings, please acknowled
 
 > *Sina Lotfi & Reza Dadbin – SBSNet-based Froth Segmentation Pipeline*
 
-Feel free to adapt the citation to your preferred reference style once a formal publication is available.
+This is a code acknowledgment, not a published-paper citation. The data-paper manuscript is currently in preparation.
